@@ -1,0 +1,96 @@
+# Implementation Plan - Query LangGraph (querylanggraph02)
+
+Implementation plan for building the **Query LangGraph (`querylanggraph02`)** for an Enterprise AIOps platform. This workflow processes natural language queries against an Inference Graph persistence database (SQLite) using Gemini 2.5 Flash, guardrails, business validation, deterministic SQL retrieval, Matplotlib visualizations, synthesis, and structured JSON formatting.
+
+## User Review Required
+
+> [!IMPORTANT]
+> **Strict Approval Rule**: Each file will be implemented individually after receiving explicit permission. No code files will be created or modified without prior confirmation for that specific file.
+> 
+> **Gemini API Key**: Nodes using Gemini 2.5 Flash (`nodes/parse_query.py` and `nodes/synthesis.py`) require `GEMINI_API_KEY` set in environment variables or provided during implementation.
+
+## Proposed Implementation Order
+
+Files will be implemented in logical order (dependencies first) to ensure complete type safety, robust architecture, and seamless integration:
+
+1. **Foundational Config & Utilities**
+   - `config.py`: Environment configuration and graph settings
+   - `utils/constants.py`: Query types, categories, default limits, status codes
+   - `utils/exceptions.py`: Custom exception hierarchy
+   - `utils/logger.py`: Centralized structured logging setup
+   - `utils/helpers.py`: Helper functions for datetime, dict parsing, and formatting
+   - `utils/encoder.py`: Base64 conversion helpers for images and binaries
+
+2. **Pydantic Schemas (`schemas/`)**
+   - `schemas/query_request.py`: Input payload schema
+   - `schemas/query_intent.py`: Parsed intent schema (Metrics, Incidents, Forecasts, Reliability, Combinational)
+   - `schemas/retrieved_data.py`: Database query payload schema
+   - `schemas/visualization_response.py`: Chart metadata and base64 payload schema
+   - `schemas/metadata.py`: Execution details and query metadata schema
+   - `schemas/response.py`: Final unified response payload schema
+   - `schemas/__init__.py`: Package exports
+
+3. **LangGraph Shared State (`state.py`)**
+   - `state.py`: TypedDict / Pydantic `QueryState` holding flow state across all nodes
+
+4. **Persistence Layer (`persistence/`)**
+   - `persistence/database.py`: SQLite connection pool & session manager
+   - `persistence/queries.py`: Parameterized SQL queries for AIOps tables
+   - `persistence/repository.py`: Data retrieval and mapping layer
+
+5. **Services Layer (`services/`)**
+   - `services/metadata_service.py`: Query execution & telemetry metadata builder
+   - `services/validation_service.py`: Business rule & parameter validation logic
+   - `services/visualization_service.py`: Matplotlib chart generator & Base64 encoder
+   - `services/retrieval_service.py`: Data fetching & SQL execution orchestrator
+   - `services/response_service.py`: Utility functions for building structured responses
+   - `services/response_formatter.py`: Standardized response generator (Answers, Errors, Charts)
+
+6. **LLM Interfaces & Prompts (`llm/`)**
+   - `llm/prompts.py`: System prompts for Parse Query and Synthesis
+   - `llm/output_parser.py`: Robust Pydantic parser for LLM JSON outputs
+   - `llm/parse_llm.py`: Gemini 2.5 Flash client for query intent extraction
+   - `llm/synthesis_llm.py`: Gemini 2.5 Flash client for natural language response synthesis
+
+7. **Guardrails (`guardrails/`)**
+   - `guardrails/parse_guard.py`: Security checks (Prompt Injection, Jailbreak, Unsafe input)
+   - `guardrails/validation_guard.py`: Security & sensitive data check pre-validation
+   - `guardrails/retrieval_guard.py`: Query safety & access control pre-retrieval
+   - `guardrails/synthesis_guard.py`: Output safety, hallucination check, consistency pre-synthesis
+   - `guardrails/__init__.py`: Guardrail package exports
+
+8. **Routers (`routers/`)**
+   - `routers/intent_router.py`: Multi-intent category routing logic
+   - `routers/sufficiency_router.py`: Check if retrieved data is sufficient for synthesis
+   - `routers/__init__.py`: Router package exports
+
+9. **Nodes (`nodes/`)**
+   - `nodes/parse_query.py`: Parse Query Node (NL -> Structured Intent)
+   - `nodes/validation.py`: Validation Node (Business rule validation)
+   - `nodes/retrieval.py`: Retrieval Node (DB fetch + Chart generation)
+   - `nodes/synthesis.py`: Synthesis Node (LLM grounded answer synthesis)
+   - `nodes/respond.py`: Respond Node (Final response emission)
+   - `nodes/__init__.py`: Node package exports
+
+10. **Graph Compilation & Configuration (`graph.py`, `requirements.txt`, `.env`)**
+    - `graph.py`: StateGraph definition, node addition, edge wiring, compilation
+    - `requirements.txt`: Python package dependencies
+    - `.env`: Default environment variables
+
+11. **Unit Tests (`tests/`)**
+    - `tests/test_parse.py`
+    - `tests/test_validation.py`
+    - `tests/test_retrieval.py`
+    - `tests/test_synthesis.py`
+    - `tests/test_respond.py`
+
+## Verification Plan
+
+### Automated Tests
+- Unit testing each node, router, service, and guardrail using pytest.
+- End-to-end testing of `graph.py` with mock and live SQLite database inputs.
+
+### Manual Verification
+- Testing combinations of query categories (Metrics + Incident, Forecast + Reliability, etc.).
+- Verifying Base64 Matplotlib image generation and rendering.
+- Testing security guardrails against injection attack prompts.
