@@ -28,13 +28,16 @@ class IntentRouter:
     """
 
     CATEGORY_MAP = {
-        "metrics": {"table": "telemetry_metrics", "query_key": "FETCH_METRICS"},
-        "incident": {"table": "classification_output", "query_key": "FETCH_INCIDENTS"},
-        "severity": {"table": "updated_severity", "query_key": "FETCH_SEVERITY"},
-        "forecast": {"table": "forecast", "query_key": "FETCH_FORECAST"},
-        "feature_contribution": {"table": "inference_outputs", "query_key": "FETCH_FEATURE_CONTRIBUTION"},
-        "system_health": {"table": "telemetry_metrics", "query_key": "FETCH_SYSTEM_HEALTH"},
-        "reliability": {"table": "reliability", "query_key": "FETCH_RELIABILITY"},
+        "metrics":              {"table": "metrics",                   "query_key": "FETCH_METRICS"},
+        "incident":             {"table": "node_classification",       "query_key": "FETCH_CLASSIFICATION"},
+        "severity":             {"table": "node_severity_update",      "query_key": "FETCH_SEVERITY_UPDATE"},
+        "forecast":             {"table": "node_forecasting",          "query_key": "FETCH_FORECASTING"},
+        "feature_contribution": {"table": "node_feature_engineering",  "query_key": "FETCH_FEATURE_ENGINEERING"},
+        "system_health":        {"table": "pipeline_results",          "query_key": "FETCH_PIPELINE_RESULTS"},
+        "reliability":          {"table": "pipeline_results",          "query_key": "FETCH_PIPELINE_RESULTS"},
+        "tumbling_window":      {"table": "node_tumbling_window",      "query_key": "FETCH_TUMBLING_WINDOW"},
+        "human_gate":           {"table": "node_human_gate",           "query_key": "FETCH_HUMAN_GATE"},
+        "preliminary_severity": {"table": "node_preliminary_severity", "query_key": "FETCH_PRELIMINARY_SEVERITY"},
     }
 
     def route_query(self, query_intent: Dict[str, Any]) -> Dict[str, Any]:

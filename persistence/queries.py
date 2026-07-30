@@ -2,7 +2,14 @@
 Persistence SQL Queries Module for Query LangGraph (querylanggraph02).
 
 Contains parameterized SQL queries for retrieving Inference Graph outputs and telemetry
-data from SQLite tables.
+data from SQLite tables defined in persistence/schema.sql.
+
+Tables served:
+  Raw telemetry:     metrics, logs, traces, severity
+  Node outputs:      node_feature_engineering, node_preliminary_severity,
+                     node_classification, node_tumbling_window, node_forecasting,
+                     node_severity_update, node_human_gate
+  Combined snapshot: pipeline_results
 """
 
 from typing import Dict, Any, Tuple, List
@@ -11,69 +18,135 @@ from typing import Dict, Any, Tuple, List
 class SQLQueries:
     """
     SQL Query repository providing parameterized queries for AIOps domain categories.
-    
+
     Guarantees parameterized SQL string generation with placeholder bindings to prevent SQL injection.
     """
 
-    # Static parameterized templates
+    # --------------------------------------------------------------------- #
+    #  Raw Telemetry
+    # --------------------------------------------------------------------- #
     FETCH_METRICS = """
-        SELECT timestamp, service, metric_name, metric_value, unit
-        FROM telemetry_metrics
-        WHERE (? IS NULL OR service = ?)
-          AND (? IS NULL OR metric_name = ?)
+        SELECT episode_id, failure_mode, service, timestamp, elapsed_s,
+               cpu_utilization, memory_utilization, heap_mb, p99_latency,
+               error_rate, cpu_saturation, rps, http_5xx_rate
+        FROM metrics
         ORDER BY timestamp DESC
         LIMIT ?;
     """
 
-    FETCH_INCIDENTS = """
-        SELECT incident_id, timestamp, service, failure_mode, confidence, root_cause
-        FROM classification_output
-        WHERE (? IS NULL OR service = ?)
-          AND (? IS NULL OR failure_mode = ?)
+    FETCH_LOGS = """
+        SELECT episode_id, failure_mode, service, timestamp, log_level, exception_type, log_message
+        FROM logs
         ORDER BY timestamp DESC
         LIMIT ?;
     """
 
-    FETCH_SEVERITY = """
-        SELECT incident_id, timestamp, service, initial_severity, updated_severity, escalation_reason
-        FROM updated_severity
-        WHERE (? IS NULL OR service = ?)
+    FETCH_SEVERITY_RAW = """
+        SELECT episode_id, failure_mode, timestamp, Severity, RawSeverity, WeightedScore,
+               CriticalCount, WarningCount, Reason, RecommendedAction
+        FROM severity
         ORDER BY timestamp DESC
         LIMIT ?;
     """
 
-    FETCH_FORECAST = """
-        SELECT timestamp, service, metric_name, forecast_value, time_to_failure_mins, anomaly_probability
-        FROM forecast
-        WHERE (? IS NULL OR service = ?)
+    # --------------------------------------------------------------------- #
+    #  Node Output Tables
+    # --------------------------------------------------------------------- #
+    FETCH_FEATURE_ENGINEERING = """
+        SELECT cycle, episode_id, failure_mode, timestamp, elapsed_s,
+               cpu_utilization, memory_utilization, heap_mb, p99_latency, error_rate,
+               log_count, log_critical_count, log_has_exception, log_has_novel_template
+        FROM node_feature_engineering
         ORDER BY timestamp DESC
         LIMIT ?;
     """
 
-    FETCH_RELIABILITY = """
-        SELECT timestamp, service, slo_percentage, uptime_percentage, error_budget_remaining
-        FROM reliability
-        WHERE (? IS NULL OR service = ?)
+    FETCH_PRELIMINARY_SEVERITY = """
+        SELECT cycle, episode_id, failure_mode, timestamp, elapsed_s,
+               preliminary_severity, severity_raw, weighted_score,
+               critical_count, warning_count, blast_size, reason, recommended_action
+        FROM node_preliminary_severity
         ORDER BY timestamp DESC
         LIMIT ?;
     """
 
-    FETCH_FEATURE_CONTRIBUTION = """
-        SELECT incident_id, timestamp, service, feature_name, importance_score, additional_metadata
-        FROM inference_outputs
-        WHERE (? IS NULL OR service = ?)
-        ORDER BY importance_score DESC
+    FETCH_CLASSIFICATION = """
+        SELECT cycle, episode_id, failure_mode, timestamp, elapsed_s,
+               predicted_failure, prediction_probability
+        FROM node_classification
+        ORDER BY timestamp DESC
         LIMIT ?;
     """
 
-    FETCH_SYSTEM_HEALTH = """
-        SELECT m.timestamp, m.service, m.metric_name, m.metric_value, c.failure_mode
-        FROM telemetry_metrics m
-        LEFT JOIN classification_output c ON m.service = c.service AND datetime(m.timestamp) = datetime(c.timestamp)
-        WHERE (? IS NULL OR m.service = ?)
-        ORDER BY m.timestamp DESC
+    FETCH_TUMBLING_WINDOW = """
+        SELECT cycle, episode_id, failure_mode, timestamp, elapsed_s,
+               dominant_state, vote_distribution, window_margin, window_full, window_size
+        FROM node_tumbling_window
+        ORDER BY timestamp DESC
         LIMIT ?;
     """
+
+    FETCH_FORECASTING = """
+        SELECT cycle, episode_id, failure_mode, timestamp, elapsed_s,
+               algorithm_used, history_steps, forecast_horizon_s,
+               time_to_failure, earliest_ttf_feature, forecast_confidence, threshold_crossed
+        FROM node_forecasting
+        ORDER BY timestamp DESC
+        LIMIT ?;
+    """
+
+    FETCH_SEVERITY_UPDATE = """
+        SELECT cycle, episode_id, failure_mode, timestamp, elapsed_s,
+               preliminary_severity, forecast_confidence, time_to_failure, earliest_ttf_feature,
+               impact_band, urgency_band, gate_passed, candidate_severity, revised_severity,
+               is_escalated, is_deescalated, dwell_count, reason
+        FROM node_severity_update
+        ORDER BY timestamp DESC
+        LIMIT ?;
+    """
+
+    FETCH_HUMAN_GATE = """
+        SELECT review_id, incident_id, episode_id, failure_mode, failure_label,
+               old_severity, new_severity, final_severity, decision, operator,
+               reason, confidence, ttf_seconds, impact_band, urgency_band, recorded_at
+        FROM node_human_gate
+        ORDER BY recorded_at DESC
+        LIMIT ?;
+    """
+
+    # --------------------------------------------------------------------- #
+    #  Combinational Snapshot
+    # --------------------------------------------------------------------- #
+    FETCH_PIPELINE_RESULTS = """
+        SELECT cycle, episode_id, failure_mode, timestamp, elapsed_s,
+               fe_cpu_utilization, fe_memory_utilization, fe_heap_mb, fe_error_rate, fe_p99_latency,
+               preliminary_severity, severity_weighted_score,
+               predicted_failure, prediction_probability,
+               dominant_state, time_to_failure, forecast_confidence,
+               candidate_severity, revised_severity,
+               hg_review_id, hg_decision, hg_final_severity
+        FROM pipeline_results
+        ORDER BY timestamp DESC
+        LIMIT ?;
+    """
+
+    # --------------------------------------------------------------------- #
+    #  Table whitelist (for parameterized builder)
+    # --------------------------------------------------------------------- #
+    ALLOWED_TABLES = {
+        "metrics",
+        "logs",
+        "traces",
+        "severity",
+        "node_feature_engineering",
+        "node_preliminary_severity",
+        "node_classification",
+        "node_tumbling_window",
+        "node_forecasting",
+        "node_severity_update",
+        "node_human_gate",
+        "pipeline_results",
+    }
 
     @classmethod
     def build_parameterized_query(
@@ -88,28 +161,29 @@ class SQLQueries:
 
         Args:
             table_name (str): Target table name (validated against whitelist).
-            services (List[str]): Service filter values.
-            metrics (List[str]): Metric name filter values.
+            services (List[str]): Service filter values (matched against 'service' column where present).
+            metrics (List[str]): Metric name filter values (unused for node tables; kept for API compat).
             limit (int): Max records to retrieve.
 
         Returns:
             Tuple[str, Tuple[Any, ...]]: (SQL string, binding parameters tuple)
         """
+        # Validate table against whitelist to prevent SQL injection
+        safe_table = table_name if table_name in cls.ALLOWED_TABLES else "metrics"
+
         where_clauses = []
         params: List[Any] = []
 
+        # Use 'failure_mode' for node tables; 'service' for raw telemetry
+        service_col = "service" if safe_table in {"metrics", "logs", "traces"} else "failure_mode"
+
         if services and len(services) > 0 and services[0] not in ["all", "*"]:
             service_placeholders = ",".join(["?"] * len(services))
-            where_clauses.append(f"service IN ({service_placeholders})")
+            where_clauses.append(f"{service_col} IN ({service_placeholders})")
             params.extend(services)
 
-        if metrics and len(metrics) > 0 and table_name in ["telemetry_metrics", "forecast"]:
-            metric_placeholders = ",".join(["?"] * len(metrics))
-            where_clauses.append(f"metric_name IN ({metric_placeholders})")
-            params.extend(metrics)
-
         where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
-        sql = f"SELECT * FROM {table_name}{where_sql} ORDER BY timestamp DESC LIMIT ?"
+        sql = f"SELECT * FROM {safe_table}{where_sql} ORDER BY timestamp DESC LIMIT ?"
         params.append(limit)
 
         return sql, tuple(params)

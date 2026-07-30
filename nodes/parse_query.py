@@ -1,12 +1,18 @@
 """
 Parse Query Node for Query LangGraph (querylanggraph02).
 
-This node uses Gemini 2.5 Flash to convert natural language queries into a
-structured QueryIntent (Pydantic JSON format).
+This node uses Gemini 2.5 Flash (via the google-genai SDK) to convert natural
+language queries into a structured QueryIntent (Pydantic JSON format).
+
+Authentication:
+  - AQ.* token  -> google.oauth2.credentials.Credentials (OAuth2 bearer)
+  - AIza* key   -> genai.Client(api_key=...)
+  - sk-or-v1*   -> OpenRouter REST fallback
 
 Responsibilities:
-- Deep semantic analysis of natural language queries (standard, complex, conversational, implicit) -> Structured QueryIntent schema.
-- Extract entities: categories, metrics, services, failure modes, time ranges, aggregations, visualization requests, filters, sorting.
+- Deep semantic analysis of natural language queries -> Structured QueryIntent schema.
+- Extract entities: categories, metrics, services, failure modes, time ranges,
+  aggregations, visualization requests, filters, sorting.
 - Pure parsing only (no validation, no SQL generation, no DB access, no business logic).
 """
 
@@ -18,10 +24,32 @@ from typing import Dict, Any, Optional
 
 logger = logging.getLogger("QueryLangGraph.Nodes.ParseQuery")
 
+MODEL = "models/gemini-flash-latest"
+
+
+def _build_genai_client(api_key: str):
+    """
+    Build and return a google.genai.Client using the correct auth strategy
+    for the given key format.
+
+    AQ.* tokens are OAuth2 access tokens issued by Google AI Studio and must
+    be wrapped in google.oauth2.credentials.Credentials so the new SDK sends
+    them as a Bearer header rather than a ?key= query parameter.
+    """
+    from google import genai
+
+    if api_key.startswith("AQ."):
+        from google.oauth2.credentials import Credentials
+        creds = Credentials(token=api_key)
+        return genai.Client(credentials=creds)
+
+    # Standard Google AI Studio API key (AIza...) or other formats
+    return genai.Client(api_key=api_key)
+
 
 class ParseQueryNode:
     """
-    Parse Query Node using Gemini 2.5 Flash.
+    Parse Query Node using Gemini 2.5 Flash (google-genai SDK).
 
     Transforms user query string into structured QueryIntent payload.
     """
@@ -86,7 +114,8 @@ Return ONLY raw valid JSON without markdown fences or outside commentary."""
         Initialize the ParseQueryNode with API credentials.
 
         Args:
-            api_key (Optional[str]): Gemini/LLM API key. If omitted, reads from environment.
+            api_key (Optional[str]): Gemini / OpenRouter API key.
+                                     If omitted, reads from environment.
         """
         self.api_key = (
             api_key
@@ -99,7 +128,8 @@ Return ONLY raw valid JSON without markdown fences or outside commentary."""
 
     def parse_with_llm(self, query: str) -> Dict[str, Any]:
         """
-        Invokes LLM (Gemini 2.5 Flash) to parse natural language into structured intent.
+        Invokes Gemini 2.5 Flash (new google-genai SDK) to parse natural language
+        into structured QueryIntent JSON.
 
         Args:
             query (str): Raw user query string.
@@ -111,52 +141,52 @@ Return ONLY raw valid JSON without markdown fences or outside commentary."""
             logger.error("ParseQueryNode: Cannot invoke LLM without API Key.")
             return self._fallback_rule_based_parse(query)
 
-        try:
-            # Direct google.generativeai call or REST fallback
+        prompt = f"{self.SYSTEM_PROMPT}\n\nUser Query: {query}"
+
+        # ------------------------------------------------------------------ #
+        # Path 1: google-genai SDK (AQ.* OAuth2 token or AIza* API key)
+        # ------------------------------------------------------------------ #
+        if not self.api_key.startswith("sk-or-v1"):
             try:
-                import google.generativeai as genai
-                genai.configure(api_key=self.api_key)
-                model = genai.GenerativeModel("gemini-2.5-flash")
-                prompt = f"{self.SYSTEM_PROMPT}\n\nUser Query: {query}"
-                response = model.generate_content(prompt)
+                client = _build_genai_client(self.api_key)
+                response = client.models.generate_content(
+                    model=MODEL,
+                    contents=prompt,
+                )
                 response_text = response.text
-            except Exception as google_err:
-                logger.debug(f"Direct google.generativeai call failed, attempting HTTP REST: {google_err}")
-                import urllib.request
+                logger.info("ParseQueryNode: LLM response received via google-genai SDK.")
+                return self._clean_and_parse_json(response_text)
+            except Exception as sdk_err:
+                logger.error(f"ParseQueryNode: google-genai SDK call failed: {sdk_err}. Falling back to rule-based parser.")
+                return self._fallback_rule_based_parse(query)
 
-                if self.api_key.startswith("sk-or-v1"):
-                    url = "https://openrouter.ai/api/v1/chat/completions"
-                    headers = {
-                        "Authorization": f"Bearer {self.api_key}",
-                        "Content-Type": "application/json"
-                    }
-                    payload = {
-                        "model": "google/gemini-2.5-flash",
-                        "messages": [
-                            {"role": "system", "content": self.SYSTEM_PROMPT},
-                            {"role": "user", "content": query}
-                        ],
-                        "temperature": 0.0
-                    }
-                else:
-                    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={self.api_key}"
-                    headers = {"Content-Type": "application/json"}
-                    payload = {
-                        "contents": [{"parts": [{"text": f"{self.SYSTEM_PROMPT}\n\nUser Query: {query}"}]}]
-                    }
-
-                req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers)
-                with urllib.request.urlopen(req, timeout=15) as resp:
-                    resp_data = json.loads(resp.read().decode('utf-8'))
-                    if "choices" in resp_data:
-                        response_text = resp_data["choices"][0]["message"]["content"]
-                    else:
-                        response_text = resp_data["candidates"][0]["content"]["parts"][0]["text"]
-
+        # ------------------------------------------------------------------ #
+        # Path 2: OpenRouter REST (sk-or-v1* keys)
+        # ------------------------------------------------------------------ #
+        try:
+            import urllib.request
+            url = "https://openrouter.ai/api/v1/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            }
+            payload = {
+                "model": "google/gemini-2.5-flash",
+                "messages": [
+                    {"role": "system", "content": self.SYSTEM_PROMPT},
+                    {"role": "user", "content": query},
+                ],
+                "temperature": 0.0,
+            }
+            req = urllib.request.Request(
+                url, data=json.dumps(payload).encode("utf-8"), headers=headers
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                resp_data = json.loads(resp.read().decode("utf-8"))
+                response_text = resp_data["choices"][0]["message"]["content"]
             return self._clean_and_parse_json(response_text)
-
         except Exception as e:
-            logger.error(f"ParseQueryNode: LLM invocation failed ({str(e)}). Falling back to rule-based parser.")
+            logger.error(f"ParseQueryNode: OpenRouter REST call failed ({e}). Falling back to rule-based parser.")
             return self._fallback_rule_based_parse(query)
 
     def _clean_and_parse_json(self, raw_response: str) -> Dict[str, Any]:
@@ -217,11 +247,11 @@ Return ONLY raw valid JSON without markdown fences or outside commentary."""
                 "chart_type": "line" if is_vis else None,
                 "x_axis": "timestamp",
                 "y_axis": "value",
-                "title": "AIOps Query Telemetry"
+                "title": "AIOps Query Telemetry",
             },
             "filters": {},
             "sorting": {"order_by": "timestamp", "order_direction": "DESC"},
-            "additional_entities": {}
+            "additional_entities": {},
         }
 
     def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:

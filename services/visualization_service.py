@@ -81,15 +81,21 @@ class VisualizationService:
             }
 
         # Specialized rendering for failure modes, feature contribution, severity if requested
-        if category_key == "incident" or "failure_mode" in rows[0]:
+        if category_key in ("incident", "node_classification") or "failure_mode" in rows[0]:
+            if "predicted_failure" in rows[0]:
+                # node_classification: use as incident/failure chart
+                return self._generate_failure_mode_chart(rows, title, mode_col="predicted_failure")
             return self._generate_failure_mode_chart(rows, title)
-        elif category_key == "feature_contribution" or "importance_score" in rows[0]:
+        elif category_key in ("feature_contribution", "node_feature_engineering") or "importance_score" in rows[0]:
             return self._generate_feature_contribution_chart(rows, title)
 
-        # General dynamic column resolution
-        x_col = self._resolve_column(rows, x_axis, fallback_options=["timestamp", "service", "id"])
+        # General dynamic column resolution — node output tables have rich fields
+        x_col = self._resolve_column(rows, x_axis, fallback_options=["timestamp", "cycle", "elapsed_s", "id"])
         y_col = self._resolve_column(rows, y_axis, fallback_options=[
-            "metric_value", "forecast_value", "slo_percentage", "confidence", "importance_score", "time_to_failure_mins"
+            "metric_value", "time_to_failure", "prediction_probability", "forecast_confidence",
+            "weighted_score", "fe_cpu_utilization", "fe_memory_utilization", "fe_heap_mb",
+            "fe_p99_latency", "fe_error_rate", "severity_weighted_score",
+            "window_margin", "importance_score",
         ])
 
         logger.info(f"VisualizationService: Generating '{chart_type}' chart | cat={category_key}, x={x_col}, y={y_col}, rows={len(rows)}")
@@ -169,10 +175,12 @@ class VisualizationService:
             spine.set_edgecolor(self.AXIS_COLOR)
         ax.grid(True, color=self.GRID_COLOR, linestyle="--", linewidth=0.5, alpha=0.6)
 
-    def _generate_failure_mode_chart(self, rows: List[Dict[str, Any]], title: str) -> Dict[str, Any]:
+    def _generate_failure_mode_chart(
+        self, rows: List[Dict[str, Any]], title: str, mode_col: str = "failure_mode"
+    ) -> Dict[str, Any]:
         """Generate specialized chart for failure modes and incident frequencies."""
         try:
-            fm_counts = Counter([str(r.get("failure_mode", "unknown")) for r in rows])
+            fm_counts = Counter([str(r.get(mode_col, r.get("failure_mode", "unknown"))) for r in rows])
             labels = list(fm_counts.keys())
             counts = list(fm_counts.values())
 

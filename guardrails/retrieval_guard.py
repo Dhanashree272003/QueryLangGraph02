@@ -21,14 +21,21 @@ class RetrievalGuardrail:
     """
 
     ALLOWED_READ_TABLES = {
-        "telemetry_metrics",
-        "telemetry_logs",
-        "telemetry_traces",
-        "classification_output",
-        "updated_severity",
-        "forecast",
-        "reliability",
-        "inference_outputs"
+        # Raw telemetry (schema.sql)
+        "metrics",
+        "logs",
+        "traces",
+        "severity",
+        # Node output tables (schema.sql)
+        "node_feature_engineering",
+        "node_preliminary_severity",
+        "node_classification",
+        "node_tumbling_window",
+        "node_forecasting",
+        "node_severity_update",
+        "node_human_gate",
+        # Combinational snapshot (schema.sql)
+        "pipeline_results",
     }
 
     MAX_RETRIEVAL_LIMIT = 5000

@@ -1,0 +1,32 @@
+# Environment & Secrets (CRITICAL)
+.env
+*.env
+
+# SQLite Databases & Persistence Storage
+*.db
+*.sqlite
+*.sqlite3
+persistence/aiops.db
+
+# Python Caches & Bytecode
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDEs & Editor Configuration
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS Generated Files
+.DS_Store
+Thumbs.db
+
+# Task & Scratch Artifacts
+scratch/
+*.log

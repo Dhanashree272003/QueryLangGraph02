@@ -1,8 +1,22 @@
 """
 Repository Layer for Query LangGraph (querylanggraph02).
 
-Provides structured data access methods for all AIOps domain query categories.
+Provides structured data access methods for all AIOps domain query categories,
+mapped to persistence/schema.sql node output tables and combinational pipeline_results.
 Executes parameterized SQL via DatabaseManager and returns clean, typed result sets.
+
+Table mapping:
+  metrics          -> metrics (raw telemetry)
+  incident         -> node_classification
+  severity         -> node_severity_update
+  preliminary_sev  -> node_preliminary_severity
+  forecast         -> node_forecasting
+  feature_engineering -> node_feature_engineering
+  tumbling_window  -> node_tumbling_window
+  human_gate       -> node_human_gate
+  system_health    -> pipeline_results (combinational)
+  reliability      -> node_severity_update (escalation context) / pipeline_results
+  feature_contribution -> node_feature_engineering (log features)
 """
 
 import logging
@@ -16,7 +30,7 @@ logger = logging.getLogger("QueryLangGraph.Persistence.Repository")
 
 class AIOpsRepository:
     """
-    Data access repository for AIOps persistence tables.
+    Data access repository for AIOps persistence tables (schema.sql).
 
     Each method maps to a query category and executes parameterized SQL,
     returning a structured list of row dictionaries. No business logic is
@@ -33,7 +47,7 @@ class AIOpsRepository:
         self.db = db_manager or DatabaseManager()
 
     # ------------------------------------------------------------------ #
-    #  Metrics
+    #  Raw Telemetry: Metrics
     # ------------------------------------------------------------------ #
     def get_metrics(
         self,
@@ -42,25 +56,25 @@ class AIOpsRepository:
         limit: int = 200
     ) -> List[Dict[str, Any]]:
         """
-        Retrieve telemetry metric records.
+        Retrieve raw telemetry metric records from the 'metrics' table.
 
         Args:
-            services (List[str]): Service name filters.
-            metrics (List[str]): Metric name filters.
+            services (List[str]): Service/failure_mode name filters.
+            metrics (List[str]): Unused; retained for API compatibility.
             limit (int): Max records to fetch.
 
         Returns:
-            List[Dict[str, Any]]: Telemetry metric rows.
+            List[Dict[str, Any]]: Raw metrics rows.
         """
         sql, params = SQLQueries.build_parameterized_query(
-            "telemetry_metrics", services or [], metrics or [], limit
+            "metrics", services or [], metrics or [], limit
         )
         result = self.db.execute_query(sql, params)
         logger.info(f"AIOpsRepository.get_metrics: Fetched {len(result)} rows.")
         return result
 
     # ------------------------------------------------------------------ #
-    #  Incidents
+    #  Node 3: Classification  →  Incidents
     # ------------------------------------------------------------------ #
     def get_incidents(
         self,
@@ -69,31 +83,27 @@ class AIOpsRepository:
         limit: int = 200
     ) -> List[Dict[str, Any]]:
         """
-        Retrieve classification output / incident records.
+        Retrieve node_classification output records (predicted failure modes).
 
         Args:
-            services (List[str]): Service name filters.
-            failure_modes (List[str]): Failure mode type filters.
+            services (List[str]): Failure mode filters (mapped to episode failure_mode).
+            failure_modes (List[str]): Explicit failure mode type filters.
             limit (int): Max records to fetch.
 
         Returns:
-            List[Dict[str, Any]]: Classification / incident rows.
+            List[Dict[str, Any]]: node_classification rows.
         """
         where_clauses = []
         params: List[Any] = []
 
-        if services and services[0] not in ["all", "*"]:
-            placeholders = ",".join(["?"] * len(services))
-            where_clauses.append(f"service IN ({placeholders})")
-            params.extend(services)
-
-        if failure_modes:
-            placeholders = ",".join(["?"] * len(failure_modes))
+        all_modes = list(set((failure_modes or []) + (services or [])))
+        if all_modes and all_modes[0] not in ["all", "*"]:
+            placeholders = ",".join(["?"] * len(all_modes))
             where_clauses.append(f"failure_mode IN ({placeholders})")
-            params.extend(failure_modes)
+            params.extend(all_modes)
 
         where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
-        sql = f"SELECT * FROM classification_output{where_sql} ORDER BY timestamp DESC LIMIT ?"
+        sql = f"SELECT * FROM node_classification{where_sql} ORDER BY timestamp DESC LIMIT ?"
         params.append(limit)
 
         result = self.db.execute_query(sql, tuple(params))
@@ -101,7 +111,7 @@ class AIOpsRepository:
         return result
 
     # ------------------------------------------------------------------ #
-    #  Severity
+    #  Node 6: Severity Update  →  Severity
     # ------------------------------------------------------------------ #
     def get_severity(
         self,
@@ -109,24 +119,24 @@ class AIOpsRepository:
         limit: int = 200
     ) -> List[Dict[str, Any]]:
         """
-        Retrieve updated severity classification records.
+        Retrieve node_severity_update records (revised severity with escalation context).
 
         Args:
-            services (List[str]): Service filters.
+            services (List[str]): Failure mode filters.
             limit (int): Max records.
 
         Returns:
-            List[Dict[str, Any]]: Severity rows.
+            List[Dict[str, Any]]: node_severity_update rows.
         """
         sql, params = SQLQueries.build_parameterized_query(
-            "updated_severity", services or [], [], limit
+            "node_severity_update", services or [], [], limit
         )
         result = self.db.execute_query(sql, params)
         logger.info(f"AIOpsRepository.get_severity: Fetched {len(result)} rows.")
         return result
 
     # ------------------------------------------------------------------ #
-    #  Forecast
+    #  Node 5: Forecasting  →  Forecast
     # ------------------------------------------------------------------ #
     def get_forecast(
         self,
@@ -135,25 +145,25 @@ class AIOpsRepository:
         limit: int = 200
     ) -> List[Dict[str, Any]]:
         """
-        Retrieve forecast and time-to-failure records.
+        Retrieve node_forecasting records (time-to-failure predictions).
 
         Args:
-            services (List[str]): Service filters.
-            metrics (List[str]): Metric name filters.
+            services (List[str]): Failure mode filters.
+            metrics (List[str]): Unused; retained for API compatibility.
             limit (int): Max records.
 
         Returns:
-            List[Dict[str, Any]]: Forecast rows.
+            List[Dict[str, Any]]: node_forecasting rows.
         """
         sql, params = SQLQueries.build_parameterized_query(
-            "forecast", services or [], metrics or [], limit
+            "node_forecasting", services or [], metrics or [], limit
         )
         result = self.db.execute_query(sql, params)
         logger.info(f"AIOpsRepository.get_forecast: Fetched {len(result)} rows.")
         return result
 
     # ------------------------------------------------------------------ #
-    #  Reliability
+    #  Node 1: Feature Engineering  →  Feature Contribution & Reliability
     # ------------------------------------------------------------------ #
     def get_reliability(
         self,
@@ -161,49 +171,46 @@ class AIOpsRepository:
         limit: int = 200
     ) -> List[Dict[str, Any]]:
         """
-        Retrieve SLO/SLA reliability metrics.
+        Retrieve reliability context from pipeline_results (SLO/SLA approximation via severity and forecast).
 
         Args:
-            services (List[str]): Service filters.
+            services (List[str]): Failure mode filters.
             limit (int): Max records.
 
         Returns:
-            List[Dict[str, Any]]: Reliability rows.
+            List[Dict[str, Any]]: pipeline_results rows with severity and forecast fields.
         """
         sql, params = SQLQueries.build_parameterized_query(
-            "reliability", services or [], [], limit
+            "pipeline_results", services or [], [], limit
         )
         result = self.db.execute_query(sql, params)
         logger.info(f"AIOpsRepository.get_reliability: Fetched {len(result)} rows.")
         return result
 
-    # ------------------------------------------------------------------ #
-    #  Feature Contribution
-    # ------------------------------------------------------------------ #
     def get_feature_contribution(
         self,
         services: Optional[List[str]] = None,
         limit: int = 200
     ) -> List[Dict[str, Any]]:
         """
-        Retrieve inference output feature importance scores.
+        Retrieve node_feature_engineering records for feature importance analysis.
 
         Args:
-            services (List[str]): Service filters.
+            services (List[str]): Failure mode filters.
             limit (int): Max records.
 
         Returns:
-            List[Dict[str, Any]]: Feature contribution rows.
+            List[Dict[str, Any]]: node_feature_engineering rows.
         """
         sql, params = SQLQueries.build_parameterized_query(
-            "inference_outputs", services or [], [], limit
+            "node_feature_engineering", services or [], [], limit
         )
         result = self.db.execute_query(sql, params)
         logger.info(f"AIOpsRepository.get_feature_contribution: Fetched {len(result)} rows.")
         return result
 
     # ------------------------------------------------------------------ #
-    #  System Health
+    #  Pipeline Results  →  System Health (Combinational)
     # ------------------------------------------------------------------ #
     def get_system_health(
         self,
@@ -211,37 +218,70 @@ class AIOpsRepository:
         limit: int = 200
     ) -> List[Dict[str, Any]]:
         """
-        Retrieve combined system health data (telemetry + classification output).
+        Retrieve combined pipeline_results snapshot rows for system health overview.
 
         Args:
-            services (List[str]): Service filters.
+            services (List[str]): Failure mode filters.
             limit (int): Max records.
 
         Returns:
-            List[Dict[str, Any]]: System health rows.
+            List[Dict[str, Any]]: pipeline_results rows.
         """
-        where_clauses = []
-        params: List[Any] = []
-
-        if services and services[0] not in ["all", "*"]:
-            placeholders = ",".join(["?"] * len(services))
-            where_clauses.append(f"m.service IN ({placeholders})")
-            params.extend(services)
-
-        where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
-        sql = f"""
-            SELECT m.timestamp, m.service, m.metric_name, m.metric_value,
-                   c.failure_mode, c.confidence
-            FROM telemetry_metrics m
-            LEFT JOIN classification_output c ON m.service = c.service
-            {where_sql}
-            ORDER BY m.timestamp DESC
-            LIMIT ?
-        """
-        params.append(limit)
-
-        result = self.db.execute_query(sql, tuple(params))
+        sql, params = SQLQueries.build_parameterized_query(
+            "pipeline_results", services or [], [], limit
+        )
+        result = self.db.execute_query(sql, params)
         logger.info(f"AIOpsRepository.get_system_health: Fetched {len(result)} rows.")
+        return result
+
+    # ------------------------------------------------------------------ #
+    #  Node 4: Tumbling Window
+    # ------------------------------------------------------------------ #
+    def get_tumbling_window(
+        self,
+        services: Optional[List[str]] = None,
+        limit: int = 200
+    ) -> List[Dict[str, Any]]:
+        """
+        Retrieve node_tumbling_window records (dominant state & vote distribution).
+
+        Args:
+            services (List[str]): Failure mode filters.
+            limit (int): Max records.
+
+        Returns:
+            List[Dict[str, Any]]: node_tumbling_window rows.
+        """
+        sql, params = SQLQueries.build_parameterized_query(
+            "node_tumbling_window", services or [], [], limit
+        )
+        result = self.db.execute_query(sql, params)
+        logger.info(f"AIOpsRepository.get_tumbling_window: Fetched {len(result)} rows.")
+        return result
+
+    # ------------------------------------------------------------------ #
+    #  Node 7: Human Gate
+    # ------------------------------------------------------------------ #
+    def get_human_gate(
+        self,
+        services: Optional[List[str]] = None,
+        limit: int = 200
+    ) -> List[Dict[str, Any]]:
+        """
+        Retrieve node_human_gate review records.
+
+        Args:
+            services (List[str]): Failure mode filters.
+            limit (int): Max records.
+
+        Returns:
+            List[Dict[str, Any]]: node_human_gate rows.
+        """
+        sql, params = SQLQueries.build_parameterized_query(
+            "node_human_gate", services or [], [], limit
+        )
+        result = self.db.execute_query(sql, params)
+        logger.info(f"AIOpsRepository.get_human_gate: Fetched {len(result)} rows.")
         return result
 
     # ------------------------------------------------------------------ #
@@ -260,7 +300,7 @@ class AIOpsRepository:
 
         Args:
             retrieval_targets (List[Dict[str, Any]]): List of routing targets with category/table info.
-            services (List[str]): Service filters.
+            services (List[str]): Service/failure_mode filters.
             metrics (List[str]): Metric filters.
             failure_modes (List[str]): Failure mode filters.
             limit (int): Per-category record limit.
@@ -268,15 +308,21 @@ class AIOpsRepository:
         Returns:
             Dict[str, List[Dict[str, Any]]]: Category-keyed dictionary of retrieved rows.
         """
+        # Merge services and failure_modes into one filter list
+        all_filters = list(set((services or []) + (failure_modes or [])))
+        filter_arg = all_filters if all_filters else services or []
+
         combined: Dict[str, List[Dict[str, Any]]] = {}
         dispatch = {
-            "metrics": lambda: self.get_metrics(services, metrics, limit),
-            "incident": lambda: self.get_incidents(services, failure_modes, limit),
-            "severity": lambda: self.get_severity(services, limit),
-            "forecast": lambda: self.get_forecast(services, metrics, limit),
-            "reliability": lambda: self.get_reliability(services, limit),
-            "feature_contribution": lambda: self.get_feature_contribution(services, limit),
-            "system_health": lambda: self.get_system_health(services, limit),
+            "metrics": lambda: self.get_metrics(filter_arg, metrics, limit),
+            "incident": lambda: self.get_incidents(filter_arg, failure_modes, limit),
+            "severity": lambda: self.get_severity(filter_arg, limit),
+            "forecast": lambda: self.get_forecast(filter_arg, metrics, limit),
+            "reliability": lambda: self.get_reliability(filter_arg, limit),
+            "feature_contribution": lambda: self.get_feature_contribution(filter_arg, limit),
+            "system_health": lambda: self.get_system_health(filter_arg, limit),
+            "tumbling_window": lambda: self.get_tumbling_window(filter_arg, limit),
+            "human_gate": lambda: self.get_human_gate(filter_arg, limit),
         }
 
         for target in retrieval_targets:
@@ -332,4 +378,3 @@ class AIOpsRepository:
         else:
             sql = "SELECT * FROM query_history ORDER BY timestamp DESC LIMIT ?"
             return self.db.execute_query(sql, (limit,))
-

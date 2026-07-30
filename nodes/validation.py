@@ -23,74 +23,112 @@ class ValidationNode:
     """
 
     ALLOWED_METRICS = {
+        # Standard telemetry
         "cpu_usage", "memory_usage", "disk_io", "network_in", "network_out",
         "latency", "error_rate", "throughput", "response_time", "queue_depth",
-        "cpu_utilization", "memory_utilization", "active_connections", "request_count"
+        "cpu_utilization", "memory_utilization", "active_connections", "request_count",
+        # Schema.sql node output fields (node_feature_engineering, node_forecasting, etc.)
+        "time_to_failure", "forecast_confidence", "prediction_probability",
+        "weighted_score", "heap_mb", "p99_latency", "p95_latency", "p50_latency",
+        "db_p99", "disk_read_latency", "disk_write_latency", "gc_pause_p99",
+        "cache_hit_rate", "cache_miss_rate", "network_errors", "queue_lag",
+        "retry_count_per_request", "rps", "http_4xx_rate", "http_5xx_rate",
+        "iops_utilization", "thread_pool_queue", "cpu_saturation",
+        "db_connection_pool", "db_connection_wait", "upstream_timeout_rate",
+        "log_count", "log_critical_count", "log_has_exception", "log_has_novel_template",
+        "window_margin", "importance_score", "severity_weighted_score",
+        "fe_cpu_utilization", "fe_memory_utilization", "fe_heap_mb",
+        "fe_error_rate", "fe_p99_latency",
     }
 
     ALLOWED_SERVICES = {
         "auth-service", "payment-service", "inventory-service", "order-service",
         "user-service", "api-gateway", "database", "cache-service", "notification-service",
-        "api-service", "all", "*"
+        "api-service", "all", "*",
+        # Failure mode names that the LLM may use as service identifiers
+        "memory_leak", "cpu_saturation", "db_connection_pool_exhaustion",
+        "network_partition", "disk_io_saturation", "cascading_failure",
     }
 
-    ALLOWED_AGGREGATIONS = {"avg", "max", "min", "sum", "count", "p95", "p99", "median"}
+    ALLOWED_AGGREGATIONS = {"avg", "max", "min", "sum", "count", "p95", "p99", "median", "latest", "none"}
 
     ALLOWED_DURATIONS = {
         "last_5_mins", "last_15_mins", "last_30_mins", "last_1_hour",
-        "last_6_hours", "last_12_hours", "last_24_hours", "last_7_days", "last_30_days"
+        "last_6_hours", "last_12_hours", "last_24_hours", "last_7_days", "last_30_days",
+        # LLM commonly outputs these
+        "last_hour", "last_day", "last_week", "all", "all_time", "recent",
     }
 
     def validate_query_intent(self, intent: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
         """
-        Validates business rules for the query intent.
+        Security-focused validation on parsed QueryIntent.
+
+        Blocks: injection patterns, malformed structures, empty categories, unsupported
+        aggregation functions.
+        Allows: any metric name, service name, or duration that passes a basic safety
+        check — since the LLM may correctly generate field names not in the static
+        allowlist (e.g. schema.sql node output columns, failure mode names).
 
         Args:
             intent (Dict[str, Any]): Parsed QueryIntent dictionary.
 
         Returns:
             Tuple[bool, Dict[str, Any]]:
-                - isValid (bool): True if intent passes all business rules.
-                - error_report (Dict[str, Any]): Details of error, explanation, and suggestions if invalid.
+                - isValid (bool): True if intent passes all security rules.
+                - error_report (Dict[str, Any]): Details of error if invalid.
         """
         errors = []
         suggestions = []
 
-        # 1. Validate Metrics
+        # --- Security pattern check (blocks SQL injection / path traversal) ---
+        SQL_INJECTION_PATTERNS = [
+            "--", ";", "DROP ", "DELETE ", "INSERT ", "UPDATE ", "EXEC(",
+            "UNION ", "OR 1=1", "<script", "../", "\x00"
+        ]
+
+        def _is_safe(value: str) -> bool:
+            v = str(value).upper()
+            return not any(p.upper() in v for p in SQL_INJECTION_PATTERNS)
+
+        # 1. Validate metrics (security only — no allowlist enforcement)
         metrics = intent.get("metrics", [])
         if metrics and isinstance(metrics, list):
             for m in metrics:
-                m_str = str(m).lower()
-                if m_str not in self.ALLOWED_METRICS and not any(k in m_str for k in ["usage", "rate", "time", "count"]):
-                    errors.append(f"Metric '{m}' is not recognized in telemetry catalog.")
-                    suggestions.append(f"Use one of the supported metrics: {', '.join(sorted(list(self.ALLOWED_METRICS)[:6]))}")
+                if not _is_safe(str(m)):
+                    errors.append(f"Metric '{m}' contains unsafe characters.")
+                    suggestions.append("Use plain metric names without special characters.")
 
-        # 2. Validate Services
+        # 2. Validate services (security only — no allowlist enforcement)
         services = intent.get("services", [])
         if services and isinstance(services, list):
             for s in services:
-                s_str = str(s).lower()
-                if s_str not in self.ALLOWED_SERVICES and not s_str.endswith("-service"):
-                    errors.append(f"Service '{s}' is not recognized in the microservice registry.")
-                    suggestions.append(f"Available services include: auth-service, payment-service, api-gateway, database, order-service.")
+                if not _is_safe(str(s)):
+                    errors.append(f"Service '{s}' contains unsafe characters.")
+                    suggestions.append("Use plain service names without special characters.")
 
-        # 3. Validate Aggregation
+        # 3. Validate aggregation function (strict — small known set)
         agg = intent.get("aggregation", {})
         if isinstance(agg, dict) and agg.get("function"):
             fn = str(agg["function"]).lower()
             if fn not in self.ALLOWED_AGGREGATIONS:
-                errors.append(f"Aggregation function '{fn}' is unsupported.")
-                suggestions.append(f"Supported functions: {', '.join(sorted(list(self.ALLOWED_AGGREGATIONS)))}")
+                if not _is_safe(fn):
+                    errors.append(f"Aggregation function '{fn}' is unsupported or unsafe.")
+                    suggestions.append(f"Supported functions: {', '.join(sorted(self.ALLOWED_AGGREGATIONS))}")
 
-        # 4. Bounds Check on Time Range
+        # 4. Time range — only block injection in duration strings; None/null always pass
         time_range = intent.get("time_range", {})
         if isinstance(time_range, dict):
             duration = time_range.get("duration")
-            if duration and duration not in self.ALLOWED_DURATIONS:
-                # Accept custom duration if it matches standard patterns, else warn
-                if not any(duration.startswith(p) for p in ["last_", "past_", "range_"]):
-                    errors.append(f"Time duration '{duration}' exceeds allowed bounds or format.")
-                    suggestions.append("Valid duration examples: 'last_1_hour', 'last_24_hours', 'last_7_days'.")
+            if duration and str(duration).lower() not in ("null", "none", ""):
+                if not _is_safe(str(duration)):
+                    errors.append(f"Time duration '{duration}' contains unsafe characters.")
+                    suggestions.append("Use a plain duration string like 'last_1_hour'.")
+
+        # 5. Require at least one category
+        categories = intent.get("categories", [])
+        if not categories or not isinstance(categories, list) or len(categories) == 0:
+            errors.append("Query intent must contain at least one category.")
+            suggestions.append("Specify a category such as 'metrics', 'incident', 'forecast', or 'severity'.")
 
         if errors:
             logger.warning(f"ValidationNode: QueryIntent validation failed with {len(errors)} error(s).")

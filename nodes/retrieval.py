@@ -75,13 +75,15 @@ class RetrievalNode:
         else:
             primary_category = routing_info.get("primary_category", "metrics")
             dispatch = {
-                "metrics": lambda: {"metrics": self.repository.get_metrics(services, metrics, limit)},
-                "incident": lambda: {"incident": self.repository.get_incidents(services, failure_modes, limit)},
-                "severity": lambda: {"severity": self.repository.get_severity(services, limit)},
-                "forecast": lambda: {"forecast": self.repository.get_forecast(services, metrics, limit)},
-                "reliability": lambda: {"reliability": self.repository.get_reliability(services, limit)},
+                "metrics":              lambda: {"metrics": self.repository.get_metrics(services, metrics, limit)},
+                "incident":             lambda: {"incident": self.repository.get_incidents(services, failure_modes, limit)},
+                "severity":             lambda: {"severity": self.repository.get_severity(services, limit)},
+                "forecast":             lambda: {"forecast": self.repository.get_forecast(services, metrics, limit)},
+                "reliability":          lambda: {"reliability": self.repository.get_reliability(services, limit)},
                 "feature_contribution": lambda: {"feature_contribution": self.repository.get_feature_contribution(services, limit)},
-                "system_health": lambda: {"system_health": self.repository.get_system_health(services, limit)},
+                "system_health":        lambda: {"system_health": self.repository.get_system_health(services, limit)},
+                "tumbling_window":      lambda: {"tumbling_window": self.repository.get_tumbling_window(services, limit)},
+                "human_gate":           lambda: {"human_gate": self.repository.get_human_gate(services, limit)},
             }
             fetcher = dispatch.get(primary_category, dispatch["metrics"])
             data = fetcher()

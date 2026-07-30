@@ -8,6 +8,14 @@ and execution limits for the Query LangGraph workflow.
 import os
 from dataclasses import dataclass, field
 
+# Load .env from project root — must happen before any os.getenv() calls
+try:
+    from dotenv import load_dotenv
+    _env_path = os.path.join(os.path.dirname(__file__), ".env")
+    load_dotenv(_env_path, override=True)
+except ImportError:
+    pass  # python-dotenv not installed; rely on shell environment
+
 
 @dataclass
 class GraphConfig:

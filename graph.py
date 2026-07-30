@@ -8,6 +8,8 @@ wiring all nodes, guardrails, and routers into a production-ready execution grap
 import logging
 from typing import Dict, Any
 
+import config  # noqa: F401 — loads .env and sets env vars before any node is imported
+
 from state import QueryState, create_initial_state
 from guardrails.parse_guard import run_parse_guard
 from nodes.parse_query import run_parse_query

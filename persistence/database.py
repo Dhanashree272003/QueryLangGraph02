@@ -36,108 +36,23 @@ class DatabaseManager:
         self._ensure_database_schema_exists()
 
     def _ensure_database_schema_exists(self) -> None:
-        """Initializes tables with mock schema if aiops.db doesn't exist yet for seamless testing."""
+        """Initializes tables using persistence/schema.sql if aiops.db doesn't exist or is missing tables."""
         db_dir = os.path.dirname(self.db_path)
         if db_dir and not os.path.exists(db_dir):
             os.makedirs(db_dir, exist_ok=True)
 
+        schema_file = os.path.join(os.path.dirname(__file__), "schema.sql")
+
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
-                # Create standard AIOps inference persistence tables
-                cursor.execute("""
-                CREATE TABLE IF NOT EXISTS telemetry_metrics (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    service VARCHAR(100),
-                    metric_name VARCHAR(100),
-                    metric_value REAL,
-                    unit VARCHAR(20)
-                );
-                """)
+                if os.path.exists(schema_file):
+                    with open(schema_file, "r", encoding="utf-8") as f:
+                        schema_sql = f.read()
+                    cursor.executescript(schema_sql)
+                    logger.info(f"DatabaseManager: Applied schema from '{schema_file}' to '{self.db_path}'")
 
-                cursor.execute("""
-                CREATE TABLE IF NOT EXISTS telemetry_logs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    service VARCHAR(100),
-                    log_level VARCHAR(20),
-                    message TEXT,
-                    incident_id VARCHAR(100)
-                );
-                """)
-
-                cursor.execute("""
-                CREATE TABLE IF NOT EXISTS telemetry_traces (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    trace_id VARCHAR(100),
-                    span_id VARCHAR(100),
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    service VARCHAR(100),
-                    operation VARCHAR(100),
-                    duration_ms REAL
-                );
-                """)
-
-                cursor.execute("""
-                CREATE TABLE IF NOT EXISTS classification_output (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    incident_id VARCHAR(100),
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    service VARCHAR(100),
-                    failure_mode VARCHAR(100),
-                    confidence REAL,
-                    root_cause TEXT
-                );
-                """)
-
-                cursor.execute("""
-                CREATE TABLE IF NOT EXISTS updated_severity (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    incident_id VARCHAR(100),
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    service VARCHAR(100),
-                    initial_severity VARCHAR(20),
-                    updated_severity VARCHAR(20),
-                    escalation_reason TEXT
-                );
-                """)
-
-                cursor.execute("""
-                CREATE TABLE IF NOT EXISTS forecast (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    service VARCHAR(100),
-                    metric_name VARCHAR(100),
-                    forecast_value REAL,
-                    time_to_failure_mins REAL,
-                    anomaly_probability REAL
-                );
-                """)
-
-                cursor.execute("""
-                CREATE TABLE IF NOT EXISTS reliability (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    service VARCHAR(100),
-                    slo_percentage REAL,
-                    uptime_percentage REAL,
-                    error_budget_remaining REAL
-                );
-                """)
-
-                cursor.execute("""
-                CREATE TABLE IF NOT EXISTS inference_outputs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    incident_id VARCHAR(100),
-                    service VARCHAR(100),
-                    feature_name VARCHAR(100),
-                    importance_score REAL,
-                    additional_metadata TEXT
-                );
-                """)
-
+                # Create query execution history table if not present in schema.sql
                 cursor.execute("""
                 CREATE TABLE IF NOT EXISTS query_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,

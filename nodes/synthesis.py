@@ -1,8 +1,13 @@
 """
 Synthesis Node for Query LangGraph (querylanggraph02).
 
-This node uses Gemini 2.5 Flash to convert structured retrieved AIOps persistence data
-into a grounded, natural language response.
+This node uses Gemini 2.5 Flash (via the google-genai SDK) to convert structured
+retrieved AIOps persistence data into a grounded, natural language response.
+
+Authentication:
+  - AQ.* token  -> google.oauth2.credentials.Credentials (OAuth2 bearer)
+  - AIza* key   -> genai.Client(api_key=...)
+  - sk-or-v1*   -> OpenRouter REST fallback
 
 Requirements:
 - Grounded explanations based strictly on retrieved database records.
@@ -19,12 +24,35 @@ from typing import Dict, Any, Optional
 
 logger = logging.getLogger("QueryLangGraph.Nodes.Synthesis")
 
+MODEL = "models/gemini-flash-latest"
+
+
+def _build_genai_client(api_key: str):
+    """
+    Build and return a google.genai.Client using the correct auth strategy
+    for the given key format.
+
+    AQ.* tokens are OAuth2 access tokens issued by Google AI Studio and must
+    be wrapped in google.oauth2.credentials.Credentials so the new SDK sends
+    them as a Bearer header rather than a ?key= query parameter.
+    """
+    from google import genai
+
+    if api_key.startswith("AQ."):
+        from google.oauth2.credentials import Credentials
+        creds = Credentials(token=api_key)
+        return genai.Client(credentials=creds)
+
+    # Standard Google AI Studio API key (AIza...) or other formats
+    return genai.Client(api_key=api_key)
+
 
 class SynthesisNode:
     """
-    Synthesis Node using Gemini 2.5 Flash.
+    Synthesis Node using Gemini 2.5 Flash (google-genai SDK).
 
-    Converts retrieved database rows, query intent, and chart metadata into natural language answers.
+    Converts retrieved database rows, query intent, and chart metadata into
+    natural language answers grounded strictly in the retrieved data.
     """
 
     SYSTEM_PROMPT = """You are an Enterprise AIOps System Architect and Senior Reliability Analyst powered by Gemini 2.5 Flash.
@@ -47,7 +75,8 @@ STRICT GROUNDING RULES:
         Initialize SynthesisNode with API key.
 
         Args:
-            api_key (Optional[str]): Gemini API key. If omitted, reads from environment.
+            api_key (Optional[str]): Gemini / OpenRouter API key.
+                                     If omitted, reads from environment.
         """
         self.api_key = (
             api_key
@@ -63,10 +92,10 @@ STRICT GROUNDING RULES:
         user_query: str,
         retrieved_data: Dict[str, Any],
         retrieval_metadata: Dict[str, Any],
-        visualization_payload: Optional[Dict[str, Any]] = None
+        visualization_payload: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
-        Invokes LLM (Gemini 2.5 Flash) to synthesize response.
+        Invokes Gemini 2.5 Flash (new google-genai SDK) to synthesize a response.
 
         Args:
             user_query (str): Raw user query text.
@@ -81,7 +110,7 @@ STRICT GROUNDING RULES:
             logger.error("SynthesisNode: Cannot invoke LLM synthesis without API Key.")
             return self._fallback_synthesis(user_query, retrieved_data, visualization_payload)
 
-        # Prepare context payload for LLM
+        # Build chart metadata for context
         has_chart = (
             visualization_payload is not None
             and visualization_payload.get("base64_image") is not None
@@ -91,11 +120,10 @@ STRICT GROUNDING RULES:
             "chart_type": visualization_payload.get("chart_type") if has_chart else None,
             "title": visualization_payload.get("title") if has_chart else None,
             "x_axis": visualization_payload.get("x_axis") if has_chart else None,
-            "y_axis": visualization_payload.get("y_axis") if has_chart else None
+            "y_axis": visualization_payload.get("y_axis") if has_chart else None,
         } if visualization_payload else {"has_chart": False}
 
-        prompt_context = f"""
-{self.SYSTEM_PROMPT}
+        prompt_context = f"""{self.SYSTEM_PROMPT}
 
 User Query: "{user_query}"
 
@@ -109,57 +137,55 @@ Retrieved Persistence Data:
 {json.dumps(retrieved_data, indent=2, default=str)}
 """
 
-        try:
-            # 1. Try google.generativeai
+        # ------------------------------------------------------------------ #
+        # Path 1: google-genai SDK (AQ.* OAuth2 token or AIza* API key)
+        # ------------------------------------------------------------------ #
+        if not self.api_key.startswith("sk-or-v1"):
             try:
-                import google.generativeai as genai
-                genai.configure(api_key=self.api_key)
-                model = genai.GenerativeModel("gemini-2.5-flash")
-                response = model.generate_content(prompt_context)
+                client = _build_genai_client(self.api_key)
+                response = client.models.generate_content(
+                    model=MODEL,
+                    contents=prompt_context,
+                )
+                logger.info("SynthesisNode: LLM response received via google-genai SDK.")
                 return response.text
-            except Exception as google_err:
-                logger.debug(f"Direct google.generativeai failed ({google_err}), trying REST fallback...")
+            except Exception as sdk_err:
+                logger.error(f"SynthesisNode: google-genai SDK call failed: {sdk_err}. Using deterministic fallback.")
+                return self._fallback_synthesis(user_query, retrieved_data, visualization_payload)
 
-                # 2. HTTP REST Fallback (OpenRouter or direct Gemini API)
-                import urllib.request
-                if self.api_key.startswith("sk-or-v1"):
-                    url = "https://openrouter.ai/api/v1/chat/completions"
-                    headers = {
-                        "Authorization": f"Bearer {self.api_key}",
-                        "Content-Type": "application/json"
-                    }
-                    payload = {
-                        "model": "google/gemini-2.5-flash",
-                        "messages": [
-                            {"role": "system", "content": self.SYSTEM_PROMPT},
-                            {"role": "user", "content": prompt_context}
-                        ],
-                        "temperature": 0.2
-                    }
-                else:
-                    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={self.api_key}"
-                    headers = {"Content-Type": "application/json"}
-                    payload = {
-                        "contents": [{"parts": [{"text": prompt_context}]}]
-                    }
-
-                req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers)
-                with urllib.request.urlopen(req, timeout=20) as resp:
-                    resp_data = json.loads(resp.read().decode('utf-8'))
-                    if "choices" in resp_data:
-                        return resp_data["choices"][0]["message"]["content"]
-                    else:
-                        return resp_data["candidates"][0]["content"]["parts"][0]["text"]
-
+        # ------------------------------------------------------------------ #
+        # Path 2: OpenRouter REST (sk-or-v1* keys)
+        # ------------------------------------------------------------------ #
+        try:
+            import urllib.request
+            url = "https://openrouter.ai/api/v1/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            }
+            payload = {
+                "model": "google/gemini-2.5-flash",
+                "messages": [
+                    {"role": "system", "content": self.SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt_context},
+                ],
+                "temperature": 0.2,
+            }
+            req = urllib.request.Request(
+                url, data=json.dumps(payload).encode("utf-8"), headers=headers
+            )
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                resp_data = json.loads(resp.read().decode("utf-8"))
+                return resp_data["choices"][0]["message"]["content"]
         except Exception as e:
-            logger.error(f"SynthesisNode: LLM invocation failed ({e}). Using deterministic fallback.")
+            logger.error(f"SynthesisNode: OpenRouter REST call failed ({e}). Using deterministic fallback.")
             return self._fallback_synthesis(user_query, retrieved_data, visualization_payload)
 
     def _fallback_synthesis(
         self,
         user_query: str,
         retrieved_data: Dict[str, Any],
-        visualization_payload: Optional[Dict[str, Any]]
+        visualization_payload: Optional[Dict[str, Any]],
     ) -> str:
         """Deterministic rule-based summary generator if LLM endpoint is unreachable."""
         sections = [f"### Query Analysis: '{user_query}'\n"]
